@@ -1,3 +1,13 @@
+"Make all HBM Works!"
+
+Allows to run Strata with gfx900 - Vega 56-64 and gfx906 - Mi50 natively.
+
+Tested at CachyOs + ROCm 7.2+ in multiGPU config ( Python 3.14.x )
+
+Setup.sh works as usual, follow original readme. 
+
+
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
