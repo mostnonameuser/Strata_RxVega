@@ -3556,7 +3556,14 @@ GFX1103_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1103") == "1"
 # build one with `STRATA_HIP_ARCHS=gfx1150 tools\hip\build_windows.bat` and start setup with `--prebuilt dist\`.
 # Unset: unchanged.
 GFX1150_OPT_IN = os.environ.get("STRATA_EXPERIMENTAL_GFX1150") == "1"
+# GCN5 wave64 cards: the RX Vega / Instinct MI25 (gfx900) and the Instinct MI50 / MI60 / Radeon VII (gfx906).
+# These take the CUDA sources as HIP through the compat layer (STRATA_HIP_GFX906, docs/AMD_HIP.md "gfx906":
+# wave64, no WMMA, no packed byte arithmetic), not the wave32 HIP backend; build_engine_hip picks the right
+# flags per architecture.  Up to 0.2.7 setup named these "not supported by setup" and only documented the hand
+# build; the gfx900 bring-up (ROCm 7.2.4 on Arch, both cards running) ran this path end to end.
+WAVE64_ARCHS = ("gfx900", "gfx906")
 AMD_ARCHS = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151") \
+            + WAVE64_ARCHS \
             + (("gfx1103",) if GFX1103_OPT_IN else ()) + (("gfx1150",) if GFX1150_OPT_IN else ())
 # The exact (bit-identical) speed switches the engine turns on by default on gfx1151 (src/core/arch_defaults.cpp), less
 # STRATA_HCD_EXACT: that one copies the gfx1151 hipBLASLt table's solutions 1176 / 1177, and the gfx1103 table
@@ -3594,7 +3601,9 @@ AMD_NAMES = {"gfx1100": "AMD Radeon RX 7900 series (gfx1100)",   # when sysfs ha
 AMD_CARDS = ("the RX 7900 XT / XTX (gfx1100), RX 7800 XT / 7700 XT (gfx1101), RX 9060 XT (gfx1200) and "
              "RX 9070 / 9070 XT / Radeon AI PRO R9700 (gfx1201), and the RX 6800 / 6900 series (gfx1030) and RX 6700 XT "
              "(gfx1031, #524), and the RX 7600 / 7600 XT (gfx1102, one run reported, #942), all unvalidated, and the Ryzen AI Max \"Strix Halo\" APU (Radeon 8060S / 8050S / 8040S, "
-             "gfx1151: experimental, docs/STRIX_HALO.md)")
+             "gfx1151: experimental, docs/STRIX_HALO.md), and the RX Vega / Instinct MI25 (gfx900) and the "
+             "Instinct MI50 / MI60 / Radeon VII (gfx906) on the wave64 compat build with a system ROCm "
+             "(docs/AMD_HIP.md)")
 
 
 def rocm_index(arch):
@@ -4586,6 +4595,10 @@ def rocm_root(archs):
         else:                                          # #446: a runtime-only ROCm (no -dev packages): cmake would fail
             warn(f"the ROCm in {sysroot} has no HIP development files ({', '.join(missing)}): using AMD's wheels in "
                  ".venv instead (or install them, e.g. AMD's amdrocm-core-dev package for your ROCm and card)")
+    if any(str(a) in WAVE64_ARCHS for a in archs):      # no TheRock wheels carry gfx900 / gfx906: ROCM_INDEXES has no such family
+        fail("gfx900 / gfx906 (wave64) compile against a system ROCm 7 in /opt/rocm: hipcc, hipBLAS, rocBLAS and the "
+             "HIP development files (AMD's Python wheels in .venv do not carry these cards)",
+             "Arch / CachyOS: sudo pacman -S rocm-hip-runtime hipblas rocblas rocminfo; check with: /opt/rocm/bin/hipcc --version")
     indexes = list(dict.fromkeys(rocm_index(a) for a in archs))
     if len(indexes) > 1:                               # TheRock's wheels hold one GPU family's libraries
         fail(f"cards of two GPU families ({', '.join(archs)}) need a system ROCm 7 (in /opt/rocm): AMD's Python "
@@ -4674,6 +4687,10 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     meta = json.loads(stamp.read_text(encoding="utf-8")) if stamp.exists() else {}
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
     archs = sorted(set(gpu.get("archs") or [gpu["arch"]]))
+    wave64 = any(str(a) in WAVE64_ARCHS for a in archs)   # gfx900 / gfx906: the CUDA tree as HIP through the compat layer
+    if wave64 and vision != "none":
+        say("  gfx900 / gfx906: this build carries no picture reader (docs/AMD_HIP.md, gfx906: images not done): --vision none")
+        vision = "none"
     has_archs = set(archs) <= set(arch_names(meta.get("archs")))
     floor = cpu_floor(cpu_info()[1])                     # "" on an AVX2 CPU: the normal engine
     engine_ok = meta.get("backend") == "hip" and (eng / EXE).exists() and meta.get("src") == src and has_archs and \
@@ -4700,13 +4717,20 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
         if meta.get("backend") == "hip" and (eng / EXE).exists() and has_archs
         else f"  Compiling the Strata engine for your AMD GPU{'s' if len(archs) > 1 else ''} ({', '.join(archs)}; "
              "10-20 minutes, once) ...")
+    llvm_bin = next((p for p in (root / "llvm" / "bin", root / "lib" / "llvm" / "bin") if (p / "clang++").exists()),
+                    root / "llvm" / "bin")   # Arch lays ROCm out in <root>/lib/llvm, the usual distros in <root>/llvm
+    defs = ["-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON",
+            "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
+            f"-DCMAKE_HIP_COMPILER={llvm_bin / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
+            "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
+            f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
+            f"-DSTRATA_GGML_DIR={llama}"]
+    defs = (["-DSTRATA_HIP_GFX906=ON", "-DSTRATA_ENABLE_HIP=OFF",   # the compat build forces its CUDA branch on
+             f"-DCMAKE_C_COMPILER={llvm_bin / 'clang'}", f"-DCMAKE_CXX_COMPILER={llvm_bin / 'clang++'}"] + defs
+            if wave64 else
+            ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_PREFILL_MMQ=ON"] + defs)   # STRATA_PREFILL_MMQ needs the wave32 backend
     cmake_build(ROOT, ROOT / "build-hip", "strata",
-                ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
-                 "-DSTRATA_PREFILL_MMQ=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
-                 f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
-                 "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
-                 f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
-                 f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
+                defs + list(isa_floor_defs(floor, ROOT / "build-hip", meta)), None, "")
     if stale_binary(ROOT / "build-hip" / EXE):            # #2054: no stamp for a binary of another version
         fail(f"the engine build finished without a new engine ({EXE} is version "
              f"{binary_engine_version(ROOT / 'build-hip' / EXE)}, this source is {source_version()}): "

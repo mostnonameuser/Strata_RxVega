@@ -18,6 +18,15 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 
+// Do not let HIP's legacy macro corrupt libstdc++ attribute names (the same fix as
+// include/strata/hip_compat/cuda_runtime.h for the wave32 backend): libstdc++ >= 15 spells
+// [[__gnu__::__noinline__]] in <format> and <chrono>, and hip's host_defines.h #defines
+// __noinline__ on the host path.  In -x hip translation units clang has the
+// cuda_noinline_keyword feature and the macro is never defined, so this is a no-op there.
+#ifdef __noinline__
+#undef __noinline__
+#endif
+
 #include <cstdint>
 #include <cstdlib>
 
@@ -130,6 +139,8 @@ template <typename T> inline hipError_t strata_host_alloc(T** p, size_t bytes, u
 #define cudaHostGetDevicePointer hipHostGetDevicePointer
 #define cudaStreamCreate hipStreamCreate
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
+#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamQuery hipStreamQuery

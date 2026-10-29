@@ -1655,9 +1655,16 @@ __global__ void __launch_bounds__(S) gdn_out_norm_loop_kernel(const float* __res
         } else {
             // STRATA_GDN_NOY=1: nothing reads the FP32 result (403 MB per 16K chunk).  The FP16 value is what the
             // compiler makes of hf(v) next to the store: v_fma_mixlo_f16, the product rounded to FP16 once
+#if defined(__GFX9__)
+            // v_fma_mixlo_f16 is a VOP3P (RDNA) instruction: GCN builds the same once-rounded product from
+            // the FP32 multiply and one FP16 conversion.  (The FP32 result stays unwritten, as in the other branch.)
+            const float v = bp * sg;
+            y16[o16] = hf(v);
+#else
             unsigned r;
             asm("v_fma_mixlo_f16 %0, %1, %2, 0" : "=v"(r) : "v"(sg), "v"(bp));
             y16[o16] = (uint16_t) r;
+#endif
         }
     }
 }
@@ -1964,7 +1971,14 @@ __global__ void __launch_bounds__(GW_NW * 32) gdn_wmma_scan_kernel(float* __rest
     __asm__ volatile("" ::"v"(touched));
     gw_lds_barrier();
     store_rows((T - 1) / GW_CK * GW_CK);
+#if defined(__gfx900__)
+    // ROCm 7.2's LLVM crashes in this kernel's codegen for gfx900 when the 64-bit `state` pointer is
+    // pinned through an SGPR-pair ("+s") asm operand ("illegal VGPR to SGPR copy").  The operand is a
+    // register-pressure hint only, and this kernel is unreachable on wave64 (gw_mma traps and the
+    // gfx_arch_is_gfx11_wmma gate refuses the launch), so the gfx900 device pass simply omits it.
+#else
     __asm__ volatile("" : "+s"(state));   // the state's addresses recomputed here, not kept (spilled) since the start
+#endif
 #pragma unroll
     for (int j = 0; j < S / 16; ++j)
 #pragma unroll

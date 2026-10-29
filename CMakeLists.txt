@@ -167,6 +167,13 @@ if(STRATA_HIP_GFX906)
     set(CMAKE_HIP_ARCHITECTURES gfx906 CACHE STRING "HIP architectures" FORCE)
   endif()
   enable_language(HIP)
+  # CMake 4.x does not add -x hip for .cu sources marked HIP, so clang reads them as CUDA and the
+  # gfx9 --offload-arch fails ("unsupported CUDA gpu architecture").  Compile-only: through
+  # CMAKE_HIP_FLAGS the same flag also lands in the link line, where it makes the linker read the
+  # .o files as HIP sources.
+  add_compile_options(
+    "$<$<COMPILE_LANGUAGE:HIP>:-x>"
+    "$<$<COMPILE_LANGUAGE:HIP>:hip>")
   find_package(hip REQUIRED)
   find_package(hipblas REQUIRED)
   add_library(CUDA::cudart INTERFACE IMPORTED)
