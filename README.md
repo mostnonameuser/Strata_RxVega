@@ -4,6 +4,15 @@ Allows to run Strata with gfx900 - Vega 56-64 and gfx906 - Mi50 natively.
 
 Tested at CachyOs + ROCm 7.2+ in multiGPU config ( Python 3.14.x )
 
+To start:
+
+sudo pacman -S rocm-hip-runtime rocminfo rocm-smi-lib hipblas rocblas
+
+If something fail - try replace original OCL drivers with ROCm:
+
+fish: 'set -gx OCL_ICD_VENDORS amdocl64.icd'
+bash: 'export OCL_ICD_VENDORS=amdocl64.icd'
+
 Setup.sh works as usual, follow original readme. 
 
 
